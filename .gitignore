@@ -1,0 +1,23 @@
+.*/
+
+# Zig build artifacts
+zig-out/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Test artifacts
+test_embed*
+/tmp/lift_*
+/build
+/dist
