@@ -3,13 +3,15 @@
 轻量级 DCC 启动器，支持 Maya、Houdini 等工具的环境隔离与一键切换。
 ![lift](./images/screenshot.png)
 
+> ⚠️ 🍎 仅 macOS 测试通过，Windows / Linux 待验证
+
 ## 定位
 
 面向影视/游戏行业的 DCC（Digital Content Creation）软件启动器，解决多项目环境冲突问题：
 
 - **环境隔离**: 每个项目拥有独立的插件、脚本、首选项
 - **一键切换**: 通过 GUI 选择项目和 DCC，自动解析并启动
-- **跨平台**: 同一套代码运行在 Windows、macOS、Linux
+- **可定制**： 用户可自定义项目配置，添加插件、脚本、首选项等。
 
 ## 架构
 
@@ -68,7 +70,7 @@ uv run build.py     # 构建完整分发包
 export LIFT_PYTHON_LIB=/usr/local/lib/python3.11
 
 # Windows
-set LIFT_PYTHON_LIB=C:\Python311\libs]
+set LIFT_PYTHON_LIB=C:\Python311\libs
 ```
 
 优先级：
@@ -82,3 +84,8 @@ set LIFT_PYTHON_LIB=C:\Python311\libs]
 - uv
 - Python 3.10+（仅 Windows 构建时）
 - tkinter (仅Linux/MacOS)
+
+## 参考项目
+
+- **[PyStand](https://github.com/skywind3000/PyStand)**: 轻量级 Python 独立部署方案，使用 C++ 语言编写的启动器加载 Python 运行时。
+- **[rez-for-projects](https://github.com/mottosso/rez-for-projects)**: Rez 包管理系统的项目示例，展示如何使用 Rez 管理复杂 DCC 项目的环境配置与依赖解析。
