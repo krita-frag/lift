@@ -1,14 +1,11 @@
-import os
-from pathlib import Path
+"""Rez 配置文件。
 
+定义 Rez 包搜索路径和本地包路径。
+"""
 
-def get_packages_root() -> Path:
-    if env_dir := os.environ.get("LIFT_PACKAGES_DIR"):
-        return Path(env_dir)
-    return Path(__file__).parent.parent.parent / "packages"
+from app.utils import get_packages_dir
 
-
-_packages_root = get_packages_root()
+_packages_root = get_packages_dir()
 
 packages_path = [
     str(_packages_root / "app"),

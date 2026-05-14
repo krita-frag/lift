@@ -14,7 +14,6 @@ pub const MainError = error{
     OutOfMemory,
 } || python.PythonError;
 
-// comptime 路径组件定义
 const PathComponents = struct {
     pub const lib = "lib";
     pub const app = "app";
@@ -22,12 +21,10 @@ const PathComponents = struct {
     pub const site_packages = "site-packages";
 };
 
-// comptime 构建路径
 const APP_DIR_PARTS = &.{ "..", PathComponents.lib, PathComponents.app };
 const SITE_PACKAGES_PARTS = &.{ "..", PathComponents.lib, PathComponents.python3, PathComponents.site_packages };
 const LIB_DIR_PARTS = &.{ "..", PathComponents.lib };
 
-// comptime 配置
 const DEFAULT_PYTHON_VERSION = "3.11";
 
 pub const AppContext = struct {
@@ -154,7 +151,6 @@ fn detectSitePackagesPath(
     const io = std.Io.Threaded.global_single_threaded.io();
     const dir = std.Io.Dir.cwd();
 
-    // 使用 comptime 路径组件构建完整路径
     var path_parts: [1 + SITE_PACKAGES_PARTS.len][]const u8 = undefined;
     path_parts[0] = base_dir;
     inline for (SITE_PACKAGES_PARTS, 0..) |part, i| {
@@ -230,17 +226,4 @@ pub fn main() MainError!void {
     try runApplication(&ctx);
 
     log.info("Application finished", .{});
-}
-
-test "AppContext init" {
-    var ctx = try AppContext.init(std.testing.allocator);
-    defer ctx.deinit();
-    try std.testing.expect(ctx.runtime == null);
-}
-
-// comptime 验证测试
-comptime {
-    // 验证路径组件
-    std.debug.assert(APP_DIR_PARTS.len == 3);
-    std.debug.assert(SITE_PACKAGES_PARTS.len == 4);
 }

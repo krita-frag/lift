@@ -460,8 +460,8 @@ const SYSTEM_PATHS = switch (builtin.target.os.tag) {
     else => LINUX_SYSTEM_PATHS,
 };
 
-/// Get system Python library paths
-/// Uses comptime-defined fallback paths for macOS and Linux
+/// 获取系统 Python 库路径
+/// 使用编译时定义的 macOS 和 Linux 回退路径
 fn getSystemPaths(allocator: std.mem.Allocator) ![]const []const u8 {
     const fallback_paths = SYSTEM_PATHS;
 

@@ -76,7 +76,7 @@ def clean() -> None:
 
 def build_zig() -> None:
     """Build Zig binary."""
-    run(["zig", "build", "--prefix", str(ZIG_OUT_DIR)])
+    run(["zig", "build", "--prefix", str(ZIG_OUT_DIR), "-Doptimize=ReleaseSafe"])
 
 
 def get_system_python() -> Path:

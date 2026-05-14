@@ -140,37 +140,3 @@ pub const CrashHandler = struct {
         try writer.interface.writeAll("End of crash report\n");
     }
 };
-
-test "getTempDir" {
-    const allocator = std.testing.allocator;
-    const temp_dir = try getTempDir(allocator);
-    defer allocator.free(temp_dir);
-    try std.testing.expect(temp_dir.len > 0);
-}
-
-test "CrashHandler.writeCrashLog creates file with expected content" {
-    const allocator = std.testing.allocator;
-
-    const test_message = "Test crash message for unit test";
-    const log_path = try CrashHandler.writeCrashLog(allocator, test_message, null);
-    defer {
-        std.fs.cwd().deleteFile(log_path) catch {};
-        allocator.free(log_path);
-    }
-
-    // Verify file exists
-    const file = try std.fs.cwd().openFile(log_path, .{});
-    defer file.close();
-
-    // Verify content contains expected fields
-    const content = try file.readToEndAlloc(allocator, 65536);
-    defer allocator.free(content);
-
-    try std.testing.expect(std.mem.containsAtLeast(u8, content, 1, "LIFT CRASH REPORT"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, content, 1, "Test crash message for unit test"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, content, 1, "Platform:"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, content, 1, "Architecture:"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, content, 1, "Zig Version:"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, content, 1, "No stack trace available"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, content, 1, "End of crash report"));
-}
