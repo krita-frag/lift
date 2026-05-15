@@ -35,29 +35,21 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v1
+        uses: ziglang/setup-zig@v1
         with:
-          version: 0.16.0-dev.2979+e93834410
-
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          version: "latest"
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+          version: master
 
       - name: Build (Linux)
         if: runner.os == 'Linux'
         run: |
+          zig version
           python3 build.py --package
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          zig version
           python build.py --package
 
       - name: Upload artifact
@@ -65,9 +57,9 @@ jobs:
         with:
           name: lift-${{ matrix.target }}
           path: |
-            dist/
-            lift-*.tar.gz
-            lift-*.zip
+            ${{ github.workspace }}/dist/
+            ${{ github.workspace }}/lift-*.tar.gz
+            ${{ github.workspace }}/lift-*.zip
           if-no-files-found: warn
 
   release:
