@@ -28,26 +28,7 @@ Python 应用 (app/)
 
 ## 快速开始
 
-### 构建
-
-```bash
-brew install tcl-tk python-tk  # 安装 tkinter 库(仅 macOS)
-zig build           # 编译启动器
-uv sync             # 同步依赖
-uv run build.py     # 构建完整分发包
-```
-
-### 运行
-
-```bash
-./dist/bin/lift     # 启动 GUI
-```
-
-## 配置
-
-在 `packages/` 目录下创建包，GUI 自动发现，以下是package目录结构：
-| 目录          | 定位     | 内容                                                         |
-| ----------- | ------ | ---------------------------------------------------------- |
+### `b- | ---------------------------------------------------------- |
 | **`app/`**  | DCC 软件 | 指向系统已安装的 Maya、Houdini、Nuke、Blender 等本体。纯引用，不携带载荷。负责 DCC 发现与环境配置。 | 
 | **`ext/`**  | 插件扩展 | Arnold、Redshift、Mgear、自定义工具集等。可自包含（带 `.mll`/`.py`）或引用系统插件。
 | **`int/`**  | 基础环境 | Python 运行时、通用库、跨项目工具脚本。被 `app` 和 `ext` 隐式或显式依赖。            |
@@ -61,7 +42,7 @@ uv run build.py     # 构建完整分发包
 - **注入**: 启动 DCC 时选择 Profile，自动注入偏好和脚本路径
 - **迁移**: 将 `profiles/` 目录复制到新机器即可恢复全部配置
 
-每个 Profile 包含 `manifest.json` 元数据文件，记录 DCC 类型、版本、平台、插件列表等信息。
+每个 Profile 包含 `manifest.json` 元数据文件，记录 DCC 类型、版本、平台等信息。
 
 
 ## 平台差异

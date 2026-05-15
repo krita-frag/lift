@@ -26,7 +26,7 @@ def get_project_version() -> str:
     """从pyproject.toml中获取python包版本"""
     pyproject = PROJECT_ROOT / "pyproject.toml"
     if pyproject.exists():
-        match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(), re.MULTILINE)
+        match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(encoding="utf-8"), re.MULTILINE)
         if match:
             return match.group(1)
     return "0.1.0"
@@ -36,7 +36,7 @@ def get_python_version() -> str:
     """从pyproject.toml中获取python编译器版本"""
     pyproject = PROJECT_ROOT / "pyproject.toml"
     if pyproject.exists():
-        match = re.search(r'requires-python\s*=\s*["\'](>=?)?(\d+\.\d+)', pyproject.read_text())
+        match = re.search(r'requires-python\s*=\s*["\'](>=?)?(\d+\.\d+)', pyproject.read_text(encoding="utf-8"))
         if match:
             return match.group(2)
     return "3.11"
