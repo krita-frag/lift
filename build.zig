@@ -104,9 +104,11 @@ pub fn build(b: *std.Build) void {
 fn linkPythonLib(b: *std.Build, compile_step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget) void {
     if (target.result.os.tag == .windows) {
         // Windows: 需要链接 embeddable Python
+        // embeddable Python 的库文件名为 python3xx.lib (如 python311.lib)
+        const python_lib_name = b.fmt("python{s}", .{"311"}); // 匹配 pyproject.toml 中的 3.11
         compile_step.root_module.addLibraryPath(b.path("libexec/python3"));
-        compile_step.root_module.linkSystemLibrary("python3", .{});
-        std.log.info("Windows: linking against embeddable Python in libexec/python3/", .{});
+        compile_step.root_module.linkSystemLibrary(python_lib_name, .{});
+        std.log.info("Windows: linking against embeddable Python lib: {s}", .{python_lib_name});
     }
     // Linux/macOS: 运行时动态加载，编译时不需要链接
 }

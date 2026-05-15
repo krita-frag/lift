@@ -199,6 +199,22 @@ def verify() -> bool:
     return ok
 
 
+def prepare_windows_python_lib() -> None:
+    """Windows: 提前下载 embeddable Python 到 libexec/python3 供 Zig 链接"""
+    libexec_dir = PROJECT_ROOT / "libexec" / "python3"
+    libexec_dir.mkdir(parents=True, exist_ok=True)
+
+    zip_path = PROJECT_ROOT / f"python-{WIN_PY_VER}-embed-amd64.zip"
+    if not zip_path.exists():
+        print(f"[BUILD] Downloading Python {WIN_PY_VER} for linking")
+        urllib.request.urlretrieve(WIN_PY_URL, zip_path)
+
+    # 解压到 libexec/python3/ 供 Zig 编译时链接
+    with zipfile.ZipFile(zip_path, 'r') as z:
+        z.extractall(libexec_dir)
+    print(f"[BUILD] Python lib extracted to: {libexec_dir}")
+
+
 def build(skip_zig: bool = False) -> None:
     """Main build."""
     print("=" * 60)
@@ -206,6 +222,11 @@ def build(skip_zig: bool = False) -> None:
     print("=" * 60)
 
     clean()
+
+    # Windows: 先准备 Python 库供 Zig 链接
+    if platform.system() == "Windows":
+        prepare_windows_python_lib()
+
     if not skip_zig:
         build_zig()
 
