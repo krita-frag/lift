@@ -3,10 +3,13 @@
 import os
 import subprocess
 import threading
+import tkinter.messagebox as messagebox
+from tkinter import filedialog
 
 import customtkinter as ctk
 from rez.resolved_context import ResolvedContext
 
+from app.dialogs import BackupSelectDialog, ProfileExportDialog, ProfileImportDialog
 from app.profile import (
     apply_profile,
     delete_profile,
@@ -14,139 +17,15 @@ from app.profile import (
     export_profile,
     get_profiles_for_dcc,
     import_profile,
+    list_backups,
     pack_profile,
+    restore_backup,
     scan_profiles,
+    validate_profile_plugins,
 )
+from app.theme import _Theme
 from app.utils import discover_tools, scan_packages, serialize_env
 
-
-class ProfileExportDialog(ctk.CTkToplevel):
-    def __init__(self, parent, dcc_name: str, dcc_version: str):
-        super().__init__(parent)
-        self.title("导出 Profile")
-        self.geometry("400x250")
-        self.resizable(False, False)
-        self.transient(parent)
-        self.grab_set()
-
-        self.dcc_name = dcc_name
-        self.dcc_version = dcc_version
-        self.result = None
-
-        frame = ctk.CTkFrame(self)
-        frame.pack(fill="both", expand=True, padx=20, pady=20)
-
-        ctk.CTkLabel(
-            frame,
-            text=f"从本机 {dcc_name} {dcc_version} 导出配置",
-            font=ctk.CTkFont(size=14, weight="bold"),
-        ).pack(pady=(0, 15))
-
-        ctk.CTkLabel(frame, text="Profile 名称:", font=ctk.CTkFont(size=12)).pack(anchor="w")
-        self.name_entry = ctk.CTkEntry(frame, placeholder_text="my_maya_setup", width=360)
-        self.name_entry.pack(pady=(0, 10))
-
-        ctk.CTkLabel(frame, text="描述 (可选):", font=ctk.CTkFont(size=12)).pack(anchor="w")
-        self.desc_entry = ctk.CTkEntry(frame, placeholder_text="我的 Maya 配置", width=360)
-        self.desc_entry.pack(pady=(0, 15))
-
-        btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_frame.pack(fill="x")
-
-        ctk.CTkButton(
-            btn_frame, text="取消", width=100, command=self.destroy,
-            fg_color="gray40", hover_color="gray30",
-        ).pack(side="right", padx=5)
-
-        ctk.CTkButton(
-            btn_frame, text="导出", width=100, command=self._on_export,
-            fg_color="#28A745", hover_color="#218838",
-        ).pack(side="right", padx=5)
-
-        self.name_entry.focus_set()
-
-    def _on_export(self):
-        name = self.name_entry.get().strip()
-        if not name:
-            self.name_entry.configure(border_color="red")
-            return
-        self.result = {
-            "name": name,
-            "description": self.desc_entry.get().strip(),
-        }
-        self.destroy()
-
-
-class ProfileImportDialog(ctk.CTkToplevel):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.title("导入 Profile")
-        self.geometry("400x280")
-        self.resizable(False, False)
-        self.transient(parent)
-        self.grab_set()
-
-        self.result = None
-
-        frame = ctk.CTkFrame(self)
-        frame.pack(fill="both", expand=True, padx=20, pady=20)
-
-        ctk.CTkLabel(
-            frame,
-            text="导入 Profile（目录或 .tar.gz 归档）",
-            font=ctk.CTkFont(size=14, weight="bold"),
-        ).pack(pady=(0, 15))
-
-        ctk.CTkLabel(frame, text="源路径:", font=ctk.CTkFont(size=12)).pack(anchor="w")
-        self.path_entry = ctk.CTkEntry(frame, placeholder_text="/path/to/profile 或 /path/to/profile.tar.gz", width=360)
-        self.path_entry.pack(pady=(0, 10))
-
-        ctk.CTkLabel(frame, text="重命名 (可选，留空使用原名):", font=ctk.CTkFont(size=12)).pack(anchor="w")
-        self.name_entry = ctk.CTkEntry(frame, placeholder_text="自定义名称", width=360)
-        self.name_entry.pack(pady=(0, 15))
-
-        btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_frame.pack(fill="x")
-
-        ctk.CTkButton(
-            btn_frame, text="取消", width=100, command=self.destroy,
-            fg_color="gray40", hover_color="gray30",
-        ).pack(side="right", padx=5)
-
-        ctk.CTkButton(
-            btn_frame, text="浏览...", width=80, command=self._browse,
-        ).pack(side="left", padx=5)
-
-        ctk.CTkButton(
-            btn_frame, text="导入", width=100, command=self._on_import,
-            fg_color="#2B7DE9", hover_color="#1E5DB5",
-        ).pack(side="right", padx=5)
-
-        self.path_entry.focus_set()
-
-    def _browse(self):
-        from tkinter import filedialog
-        path = filedialog.askdirectory(title="选择 Profile 目录")
-        if not path:
-            path = filedialog.askopenfilename(
-                title="选择 Profile 归档",
-                filetypes=[("tar.gz 归档", "*.tar.gz"), ("所有文件", "*.*")],
-            )
-        if path:
-            self.path_entry.delete(0, "end")
-            self.path_entry.insert(0, path)
-
-    def _on_import(self):
-        source = self.path_entry.get().strip()
-        if not source:
-            self.path_entry.configure(border_color="red")
-            return
-        name = self.name_entry.get().strip() or None
-        self.result = {
-            "source": source,
-            "name": name,
-        }
-        self.destroy()
 
 
 class LiftLauncher(ctk.CTk):
@@ -154,8 +33,8 @@ class LiftLauncher(ctk.CTk):
         super().__init__()
 
         self.title("Lift Launcher")
-        self.geometry("960x640")
-        self.minsize(800, 500)
+        self.geometry(_Theme.WINDOW_SIZE)
+        self.minsize(*_Theme.WINDOW_MIN_SIZE)
         ctk.set_appearance_mode("System")
 
         self.selected_category = None
@@ -167,7 +46,9 @@ class LiftLauncher(ctk.CTk):
         self.discovered_tools = []
         self.detected_dccs = []
         self._launching = False
+        self._launch_lock = threading.Lock()
         self._selected_profiles_for_delete = set()
+        self._themed_buttons: list[tuple] = []
 
         self._build_ui()
         self._refresh_packages()
@@ -176,49 +57,55 @@ class LiftLauncher(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        toolbar = ctk.CTkFrame(self, height=60)
+        toolbar = ctk.CTkFrame(self, height=_Theme.TOOLBAR_HEIGHT)
         toolbar.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
         toolbar.grid_propagate(False)
 
-        ctk.CTkLabel(toolbar, text="分类:", font=ctk.CTkFont(size=12)).pack(side="left", padx=(10, 5))
+        ctk.CTkLabel(toolbar, text="分类:", font=ctk.CTkFont(size=_Theme.FONT_SIZE_MEDIUM)).pack(
+            side="left", padx=(10, 5)
+        )
         self.cat_menu = ctk.CTkOptionMenu(
             toolbar,
             values=["选择分类"],
             command=self.on_cat_change,
             width=100,
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_MEDIUM),
         )
         self.cat_menu.pack(side="left", padx=5)
 
-        ctk.CTkLabel(toolbar, text="包:", font=ctk.CTkFont(size=12)).pack(side="left", padx=(10, 5))
+        ctk.CTkLabel(toolbar, text="包:", font=ctk.CTkFont(size=_Theme.FONT_SIZE_MEDIUM)).pack(side="left", padx=(10, 5))
         self.pkg_menu = ctk.CTkOptionMenu(
             toolbar,
             values=["选择包"],
             command=self.on_pkg_change,
             width=130,
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_MEDIUM),
             state="disabled",
         )
         self.pkg_menu.pack(side="left", padx=5)
 
-        ctk.CTkLabel(toolbar, text="版本:", font=ctk.CTkFont(size=12)).pack(side="left", padx=(10, 5))
+        ctk.CTkLabel(toolbar, text="版本:", font=ctk.CTkFont(size=_Theme.FONT_SIZE_MEDIUM)).pack(
+            side="left", padx=(10, 5)
+        )
         self.ver_menu = ctk.CTkOptionMenu(
             toolbar,
             values=["选择版本"],
             command=self.on_ver_change,
             width=80,
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_MEDIUM),
             state="disabled",
         )
         self.ver_menu.pack(side="left", padx=5)
 
-        ctk.CTkLabel(toolbar, text="Profile:", font=ctk.CTkFont(size=12)).pack(side="left", padx=(10, 5))
+        ctk.CTkLabel(toolbar, text="Profile:", font=ctk.CTkFont(size=_Theme.FONT_SIZE_MEDIUM)).pack(
+            side="left", padx=(10, 5)
+        )
         self.profile_menu = ctk.CTkOptionMenu(
             toolbar,
             values=["无"],
             command=self.on_profile_change,
             width=130,
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_MEDIUM),
             state="disabled",
         )
         self.profile_menu.pack(side="left", padx=5)
@@ -228,7 +115,7 @@ class LiftLauncher(ctk.CTk):
             text="⟳ 刷新",
             width=70,
             command=self._refresh_packages,
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_NORMAL),
         )
         self.refresh_btn.pack(side="right", padx=10)
 
@@ -238,26 +125,39 @@ class LiftLauncher(ctk.CTk):
             width=90,
             command=self.resolve_env,
             state="disabled",
-            font=ctk.CTkFont(size=12),
-            fg_color="#2B7DE9",
-            hover_color="#1E5DB5",
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_MEDIUM),
+            fg_color=_Theme.COLOR_PRIMARY,
+            hover_color=_Theme.COLOR_PRIMARY_HOVER,
         )
         self.resolve_btn.pack(side="right", padx=10)
+        self._register_themed_button(self.resolve_btn, "primary", "primary_hover")
+
+        self.theme_btn = ctk.CTkButton(
+            toolbar,
+            text="🌙",
+            width=40,
+            command=self._toggle_theme,
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_MEDIUM),
+            fg_color=_Theme.COLOR_SECONDARY,
+            hover_color=_Theme.COLOR_SECONDARY_HOVER,
+        )
+        self.theme_btn.pack(side="right", padx=5)
+        self._register_themed_button(self.theme_btn, "secondary", "secondary_hover")
 
         content = ctk.CTkFrame(self)
         content.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
         content.grid_columnconfigure(0, weight=1)
         content.grid_rowconfigure(1, weight=1)
 
-        self.info_frame = ctk.CTkFrame(content, height=40)
+        self.info_frame = ctk.CTkFrame(content, height=_Theme.INFO_FRAME_HEIGHT)
         self.info_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
         self.info_frame.grid_propagate(False)
 
         self.info_label = ctk.CTkLabel(
             self.info_frame,
             text="请选择分类、包和版本",
-            font=ctk.CTkFont(size=12),
-            text_color="gray60",
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_MEDIUM),
+            text_color=_Theme.COLOR_TEXT_MUTED,
         )
         self.info_label.pack(side="left", padx=10, pady=8)
 
@@ -296,15 +196,15 @@ class LiftLauncher(ctk.CTk):
 
         self._build_profile_tab()
 
-        self.status_bar = ctk.CTkFrame(self, height=30)
+        self.status_bar = ctk.CTkFrame(self, height=_Theme.STATUS_BAR_HEIGHT)
         self.status_bar.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="ew")
         self.status_bar.grid_propagate(False)
 
         self.status_label = ctk.CTkLabel(
             self.status_bar,
             text="就绪",
-            font=ctk.CTkFont(size=11),
-            text_color="gray60",
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_NORMAL),
+            text_color=_Theme.COLOR_TEXT_MUTED,
         )
         self.status_label.pack(side="left", padx=10, pady=5)
 
@@ -312,31 +212,60 @@ class LiftLauncher(ctk.CTk):
         btn_frame = ctk.CTkFrame(self.tab_profile)
         btn_frame.pack(fill="x", padx=5, pady=5)
 
-        ctk.CTkButton(
-            btn_frame, text="导出本机配置", width=110,
+        self.export_profile_btn = ctk.CTkButton(
+            btn_frame,
+            text="导出本机配置",
+            width=110,
             command=self._on_export_profile,
-            font=ctk.CTkFont(size=11),
-            fg_color="#28A745", hover_color="#218838",
-        ).pack(side="left", padx=5)
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_NORMAL),
+            fg_color=_Theme.COLOR_SUCCESS,
+            hover_color=_Theme.COLOR_SUCCESS_HOVER,
+        )
+        self.export_profile_btn.pack(side="left", padx=5)
+        self._register_themed_button(self.export_profile_btn, "success", "success_hover")
 
-        ctk.CTkButton(
-            btn_frame, text="导入", width=70,
+        self.import_profile_btn = ctk.CTkButton(
+            btn_frame,
+            text="导入",
+            width=70,
             command=self._on_import_profile,
-            font=ctk.CTkFont(size=11),
-            fg_color="#6C757D", hover_color="#5A6268",
-        ).pack(side="left", padx=5)
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_NORMAL),
+            fg_color=_Theme.COLOR_SECONDARY,
+            hover_color=_Theme.COLOR_SECONDARY_HOVER,
+        )
+        self.import_profile_btn.pack(side="left", padx=5)
+        self._register_themed_button(self.import_profile_btn, "secondary", "secondary_hover")
 
-        ctk.CTkButton(
-            btn_frame, text="删除", width=70,
+        self.delete_profile_btn = ctk.CTkButton(
+            btn_frame,
+            text="删除",
+            width=_Theme.BTN_WIDTH_MEDIUM,
             command=self._on_delete_profile,
-            font=ctk.CTkFont(size=11),
-            fg_color="#DC3545", hover_color="#C82333",
-        ).pack(side="left", padx=5)
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_NORMAL),
+            fg_color=_Theme.COLOR_DANGER,
+            hover_color=_Theme.COLOR_DANGER_HOVER,
+        )
+        self.delete_profile_btn.pack(side="left", padx=5)
+        self._register_themed_button(self.delete_profile_btn, "danger", "danger_hover")
+
+        self.restore_backup_btn = ctk.CTkButton(
+            btn_frame,
+            text="恢复备份",
+            width=_Theme.BTN_WIDTH_LARGE,
+            command=self._on_restore_backup,
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_NORMAL),
+            fg_color=_Theme.COLOR_SECONDARY,
+            hover_color=_Theme.COLOR_SECONDARY_HOVER,
+        )
+        self.restore_backup_btn.pack(side="left", padx=5)
+        self._register_themed_button(self.restore_backup_btn, "secondary", "secondary_hover")
 
         ctk.CTkButton(
-            btn_frame, text="⟳ 刷新", width=70,
+            btn_frame,
+            text="⟳ 刷新",
+            width=_Theme.BTN_WIDTH_MEDIUM,
             command=self._refresh_profile_list,
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_NORMAL),
         ).pack(side="right", padx=5)
 
         mode_frame = ctk.CTkFrame(self.tab_profile)
@@ -345,49 +274,46 @@ class LiftLauncher(ctk.CTk):
         ctk.CTkLabel(
             mode_frame,
             text="应用模式:",
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_MEDIUM),
         ).pack(side="left", padx=10, pady=5)
 
         self.mode_var = ctk.StringVar(value="read")
 
-        # 临时模式：只读，使用临时目录
         self.mode_read = ctk.CTkRadioButton(
             mode_frame,
             text="只读",
             variable=self.mode_var,
             value="read",
             command=self._on_mode_change,
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_NORMAL),
         )
         self.mode_read.pack(side="left", padx=10, pady=5)
 
-        # 链接模式：读写，直接定位到 profile 目录（有污染风险）
+        self.mode_override = ctk.CTkRadioButton(
+            mode_frame,
+            text="覆盖",
+            variable=self.mode_var,
+            value="override",
+            command=self._on_mode_change,
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_NORMAL),
+        )
+        self.mode_override.pack(side="left", padx=10, pady=5)
+
         self.mode_write = ctk.CTkRadioButton(
             mode_frame,
             text="读写",
             variable=self.mode_var,
             value="write",
             command=self._on_mode_change,
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_NORMAL),
         )
         self.mode_write.pack(side="left", padx=10, pady=5)
 
-        # 覆盖模式：替换用户原有配置
-        self.mode_global = ctk.CTkRadioButton(
-            mode_frame,
-            text="覆盖",
-            variable=self.mode_var,
-            value="global",
-            command=self._on_mode_change,
-            font=ctk.CTkFont(size=11),
-        )
-        self.mode_global.pack(side="left", padx=10, pady=5)
-
         self.mode_hint = ctk.CTkLabel(
             mode_frame,
-            text="仅本次启动生效，不修改用户目录",
-            font=ctk.CTkFont(size=10),
-            text_color="gray60",
+            text="临时目录，只读，安全无风险",
+            font=ctk.CTkFont(size=_Theme.FONT_SIZE_SMALL),
+            text_color=_Theme.COLOR_TEXT_MUTED,
         )
         self.mode_hint.pack(side="left", padx=10, pady=5)
 
@@ -402,18 +328,18 @@ class LiftLauncher(ctk.CTk):
         hints = {
             "read": (
                 "临时目录，只读，安全无风险",
-                "gray60",
+                _Theme.COLOR_TEXT_MUTED,
+            ),
+            "override": (
+                "覆盖用户目录，自动备份原配置",
+                _Theme.COLOR_ORANGE,
             ),
             "write": (
                 "直接指向 Profile 目录，可读写，DCC配置会污染 Profile",
-                "#FFC107",
-            ),
-            "global": (
-                "覆盖用户目录，自动备份原配置",
-                "#FD7E14",
+                _Theme.COLOR_WARNING,
             ),
         }
-        text, color = hints.get(self.profile_mode, ("", "gray60"))
+        text, color = hints.get(self.profile_mode, ("", _Theme.COLOR_TEXT_MUTED))
         self.mode_hint.configure(text=text, text_color=color)
 
     def _toggle_profile_selection(self, profile_name: str, checkbox: ctk.CTkCheckBox):
@@ -427,13 +353,14 @@ class LiftLauncher(ctk.CTk):
     def _refresh_profile_list(self):
         for widget in self.profile_list_frame.winfo_children():
             widget.destroy()
+        self._cleanup_destroyed_themed_buttons()
 
         profiles = scan_profiles()
         if not profiles:
             ctk.CTkLabel(
                 self.profile_list_frame,
                 text="暂无 Profile。点击「导出本机配置」或「导入」添加。",
-                text_color="gray60",
+                text_color=_Theme.COLOR_TEXT_MUTED,
             ).pack(pady=20)
             return
 
@@ -442,10 +369,10 @@ class LiftLauncher(ctk.CTk):
             frame = ctk.CTkFrame(self.profile_list_frame)
             frame.pack(fill="x", padx=5, pady=3)
 
-            # Checkbox for selection
             is_selected = name in self._selected_profiles_for_delete
             checkbox = ctk.CTkCheckBox(
-                frame, text="",
+                frame,
+                text="",
                 width=20,
             )
             checkbox.configure(
@@ -457,40 +384,48 @@ class LiftLauncher(ctk.CTk):
 
             text = f"{name}  ({manifest['dcc']} {manifest['dcc_version']})"
             ctk.CTkLabel(
-                frame, text=text,
+                frame,
+                text=text,
                 font=ctk.CTkFont(size=12, weight="bold"),
             ).pack(side="left", padx=5, pady=5)
 
             if manifest.get("description"):
                 ctk.CTkLabel(
-                    frame, text=manifest["description"],
-                    font=ctk.CTkFont(size=11),
-                    text_color="gray60",
+                    frame,
+                    text=manifest["description"],
+                    font=ctk.CTkFont(size=_Theme.FONT_SIZE_NORMAL),
+                    text_color=_Theme.COLOR_TEXT_MUTED,
                 ).pack(side="left", padx=5, pady=5)
 
             platform_text = manifest.get("platform", "")
             if platform_text:
                 ctk.CTkLabel(
-                    frame, text=platform_text,
-                    font=ctk.CTkFont(size=10),
-                    text_color="gray50",
+                    frame,
+                    text=platform_text,
+                    font=ctk.CTkFont(size=_Theme.FONT_SIZE_SMALL),
+                    text_color=_Theme.COLOR_TEXT_SUBTLE,
                 ).pack(side="right", padx=10, pady=5)
 
             plugin_count = len(manifest.get("plugins", []))
             if plugin_count > 0:
                 ctk.CTkLabel(
-                    frame, text=f"{plugin_count} 插件",
-                    font=ctk.CTkFont(size=10),
-                    text_color="gray50",
+                    frame,
+                    text=f"{plugin_count} 插件",
+                    font=ctk.CTkFont(size=_Theme.FONT_SIZE_SMALL),
+                    text_color=_Theme.COLOR_TEXT_SUBTLE,
                 ).pack(side="right", padx=5, pady=5)
 
             pack_btn = ctk.CTkButton(
-                frame, text="打包", width=50,
+                frame,
+                text="打包",
+                width=_Theme.BTN_WIDTH_SMALL,
                 command=lambda n=name: self._on_pack_profile(n),
-                font=ctk.CTkFont(size=10),
-                fg_color="#6C757D", hover_color="#5A6268",
+                font=ctk.CTkFont(size=_Theme.FONT_SIZE_SMALL),
+                fg_color=_Theme.COLOR_SECONDARY,
+                hover_color=_Theme.COLOR_SECONDARY_HOVER,
             )
             pack_btn.pack(side="right", padx=5, pady=3)
+            self._register_themed_button(pack_btn, "secondary", "secondary_hover")
 
     def _on_export_profile(self):
         if not self.detected_dccs:
@@ -537,6 +472,12 @@ class LiftLauncher(ctk.CTk):
             return
 
         profiles_to_delete = list(self._selected_profiles_for_delete)
+        if not messagebox.askyesno(
+            "确认删除",
+            f"确定要删除 {len(profiles_to_delete)} 个 Profile 吗？\n\n此操作不可撤销。",
+            icon="warning",
+        ):
+            return
         deleted_count = 0
         failed_profiles = []
 
@@ -561,7 +502,6 @@ class LiftLauncher(ctk.CTk):
                 self.log(f"✗ 删除失败 '{name}': {error}", error=True)
 
     def _on_pack_profile(self, profile_name: str):
-        from tkinter import filedialog
         dest_path = filedialog.asksaveasfilename(
             title="导出 Profile 压缩包",
             defaultextension=".tar.gz",
@@ -576,6 +516,67 @@ class LiftLauncher(ctk.CTk):
             self.log(f"✓ Profile 已导出: {archive_path}")
         except Exception as e:
             self.log(f"✗ 导出失败: {e}", error=True)
+
+    def _on_restore_backup(self):
+        if not self.detected_dccs:
+            self.log("请先解析环境以检测 DCC", error=True)
+            return
+
+        dcc = self.detected_dccs[0]
+        dcc_name = dcc["name"]
+        dcc_version = dcc["version"]
+
+        backups = list_backups(dcc_name, dcc_version)
+        if not backups:
+            messagebox.showinfo("恢复备份", f"未找到 {dcc_name} {dcc_version} 的备份")
+            return
+
+        dialog = BackupSelectDialog(self, backups, dcc_name, dcc_version)
+        self.wait_window(dialog)
+
+        if dialog.result is None:
+            return
+
+        selected = dialog.result
+        if not messagebox.askyesno(
+            "确认恢复",
+            f"确定要将 {dcc_name} {dcc_version} 的配置恢复到以下备份吗？\n\n"
+            f"  {selected.name}\n\n此操作将替换当前用户目录配置。",
+            icon="warning",
+        ):
+            return
+
+        try:
+            restore_backup(selected, dcc_name, dcc_version)
+            self.log(f"✓ 已恢复备份: {selected.name}")
+        except Exception as e:
+            self.log(f"✗ 恢复备份失败: {e}", error=True)
+
+    def _toggle_theme(self):
+        current = ctk.get_appearance_mode()
+        next_mode = "Dark" if current == "Light" else "Light"
+        ctk.set_appearance_mode(next_mode)
+        self.theme_btn.configure(text="☀️" if next_mode == "Dark" else "🌙")
+        self._apply_theme_colors()
+
+    def _register_themed_button(self, widget, fg_key: str, hover_key: str) -> None:
+        self._themed_buttons.append((widget, fg_key, hover_key))
+
+    def _cleanup_destroyed_themed_buttons(self) -> None:
+        self._themed_buttons = [
+            (w, fg, hv) for w, fg, hv in self._themed_buttons if w.winfo_exists()
+        ]
+
+    def _apply_theme_colors(self):
+        palette = _Theme._palette()
+        for widget, fg_key, hover_key in self._themed_buttons:
+            try:
+                widget.configure(
+                    fg_color=palette[fg_key],
+                    hover_color=palette[hover_key],
+                )
+            except Exception:
+                pass
 
     def _refresh_packages(self):
         self.packages_data = scan_packages()
@@ -597,9 +598,7 @@ class LiftLauncher(ctk.CTk):
         self.on_cat_change(cat_list[0])
 
         total = sum(
-            len(versions)
-            for cats in self.packages_data.values()
-            for versions in cats.values()
+            len(versions) for cats in self.packages_data.values() for versions in cats.values()
         )
         self.log(f"发现 {total} 个包版本")
         self.status(f"已刷新 - {total} 个包版本")
@@ -700,7 +699,7 @@ class LiftLauncher(ctk.CTk):
         elif self.selected_category and self.selected_pkg:
             parts.append(f"{self.selected_category} / {self.selected_pkg} - 请选择版本")
         else:
-            self.info_label.configure(text="请选择分类、包和版本", text_color="gray60")
+            self.info_label.configure(text="请选择分类、包和版本", text_color=_Theme.COLOR_TEXT_MUTED)
             return
 
         if self.selected_profile:
@@ -715,7 +714,11 @@ class LiftLauncher(ctk.CTk):
             self.pkg_info_box.insert("end", "请选择分类、包和版本查看详情")
             return
 
-        pkg_path = self.packages_data.get(self.selected_category, {}).get(self.selected_pkg, {}).get(self.selected_ver)
+        pkg_path = (
+            self.packages_data.get(self.selected_category, {})
+            .get(self.selected_pkg, {})
+            .get(self.selected_ver)
+        )
         if pkg_path:
             self.pkg_info_box.insert("end", f"分类: {self.selected_category}\n")
             self.pkg_info_box.insert("end", f"包名: {self.selected_pkg}\n")
@@ -757,23 +760,22 @@ class LiftLauncher(ctk.CTk):
                 val = env[key]
                 if isinstance(val, list):
                     val = os.pathsep.join(val)
-                if any(x in key for x in ["PATH", "MAYA", "HOUDINI", "NUKE", "BLENDER", "REZ", "PYTHON"]):
+                if any(
+                    x in key
+                    for x in ["PATH", "MAYA", "HOUDINI", "NUKE", "BLENDER", "REZ", "PYTHON"]
+                ):
                     env_text += f"{key}={val}\n"
 
             tools = discover_tools(context)
 
-            self.after(0, lambda: self._on_resolve_success(
-                context, env_text, tools, detected_dccs
-            ))
+            self.after(0, lambda: self._on_resolve_success(context, env_text, tools, detected_dccs))
 
         except Exception as e:
             self._gui_log(f"✗ 解析失败: {e}", error=True)
             error_msg = str(e)
             self.after(0, lambda msg=error_msg: self.status(f"错误: {msg}"))
         finally:
-            self.after(0, lambda: self.resolve_btn.configure(
-                state="normal", text="▶ 解析环境"
-            ))
+            self.after(0, lambda: self.resolve_btn.configure(state="normal", text="▶ 解析环境"))
 
     def _on_resolve_success(
         self,
@@ -793,11 +795,12 @@ class LiftLauncher(ctk.CTk):
     def _clear_tools(self):
         for widget in self.tools_frame.winfo_children():
             widget.destroy()
+        self._cleanup_destroyed_themed_buttons()
 
         label = ctk.CTkLabel(
             self.tools_frame,
             text="解析环境后将显示可启动工具",
-            text_color="gray60",
+            text_color=_Theme.COLOR_TEXT_MUTED,
         )
         label.pack(pady=20)
 
@@ -808,7 +811,7 @@ class LiftLauncher(ctk.CTk):
             label = ctk.CTkLabel(
                 self.tools_frame,
                 text="未发现可启动工具",
-                text_color="gray60",
+                text_color=_Theme.COLOR_TEXT_MUTED,
             )
             label.pack(pady=20)
             return
@@ -820,39 +823,41 @@ class LiftLauncher(ctk.CTk):
             name_label = ctk.CTkLabel(
                 frame,
                 text=tool["name"],
-                font=ctk.CTkFont(size=13, weight="bold"),
+                font=ctk.CTkFont(size=_Theme.FONT_SIZE_LARGE, weight="bold"),
             )
             name_label.pack(side="left", padx=10, pady=5)
 
             pkg_label = ctk.CTkLabel(
                 frame,
                 text=f"({tool['package']})",
-                font=ctk.CTkFont(size=11),
-                text_color="gray60",
+                font=ctk.CTkFont(size=_Theme.FONT_SIZE_NORMAL),
+                text_color=_Theme.COLOR_TEXT_MUTED,
             )
             pkg_label.pack(side="left", padx=5, pady=5)
 
             launch_btn = ctk.CTkButton(
                 frame,
                 text="启动",
-                width=70,
+                width=_Theme.BTN_WIDTH_MEDIUM,
                 command=lambda t=tool: self.launch_tool(t),
-                font=ctk.CTkFont(size=11),
-                fg_color="#2B7DE9",
-                hover_color="#1E5DB5",
+                font=ctk.CTkFont(size=_Theme.FONT_SIZE_NORMAL),
+                fg_color=_Theme.COLOR_PRIMARY,
+                hover_color=_Theme.COLOR_PRIMARY_HOVER,
             )
             launch_btn.pack(side="right", padx=5, pady=3)
+            self._register_themed_button(launch_btn, "primary", "primary_hover")
 
     def launch_tool(self, tool: dict):
         if not self.resolved_context:
             self.log("请先解析环境", error=True)
             return
 
-        if self._launching:
-            self.log("已有启动任务进行中，请稍候", error=True)
-            return
+        with self._launch_lock:
+            if self._launching:
+                self.log("已有启动任务进行中，请稍候", error=True)
+                return
+            self._launching = True
 
-        self._launching = True
         self._set_tool_buttons_state("disabled")
         self.update()
 
@@ -862,6 +867,28 @@ class LiftLauncher(ctk.CTk):
         mode = self.profile_mode
 
         if self.selected_profile:
+            if mode in ("write", "override"):
+                confirm_msgs = {
+                    "write": (
+                        "读写模式警告",
+                        f"读写模式将直接挂载 Profile 目录，DCC 的任何修改都会写入 Profile。\n\n"
+                        f"Profile: {self.selected_profile}\n\n"
+                        f"是否继续？",
+                    ),
+                    "override": (
+                        "覆盖模式警告",
+                        f"覆盖模式将替换用户目录中的现有配置（自动备份）。\n\n"
+                        f"Profile: {self.selected_profile}\n\n"
+                        f"是否继续？",
+                    ),
+                }
+                title, msg = confirm_msgs[mode]
+                if not messagebox.askyesno(title, msg, icon="warning"):
+                    with self._launch_lock:
+                        self._launching = False
+                    self._set_tool_buttons_state("normal")
+                    return
+
             try:
                 dcc = self.detected_dccs[0] if self.detected_dccs else None
                 dcc_name = dcc["name"] if dcc else None
@@ -873,17 +900,35 @@ class LiftLauncher(ctk.CTk):
                     dcc=dcc_name,
                     dcc_version=dcc_version,
                 )
-                if mode == "global":
-                    self.log(f"✓ Profile 已应用为默认配置: {self.selected_profile}")
+                if mode == "override":
+                    self.log(f"✓ Profile 已覆盖默认配置: {self.selected_profile}")
+                elif mode == "write":
+                    self.log(f"⚠ Profile 直接挂载（可读写）: {self.selected_profile}")
                 else:
-                    self.log(f"已应用 Profile（临时）: {self.selected_profile}")
+                    self.log(f"✓ Profile 已应用（临时只读）: {self.selected_profile}")
+
+                if dcc_name and dcc_version:
+                    plugin_warnings = validate_profile_plugins(
+                        self.selected_profile, dcc_name, dcc_version
+                    )
+                    for w in plugin_warnings:
+                        self.log(f"⚠ {w}")
+            except RuntimeError as e:
+                messagebox.showerror("Profile 兼容性错误", str(e))
+                self.log(f"✗ Profile 兼容性错误: {e}", error=True)
+                with self._launch_lock:
+                    self._launching = False
+                self._set_tool_buttons_state("normal")
+                return
             except Exception as e:
                 self.log(f"✗ 应用 Profile 失败: {e}", error=True)
-                self._launching = False
+                with self._launch_lock:
+                    self._launching = False
                 self._set_tool_buttons_state("normal")
                 return
 
-        mode_label = "临时" if mode == "read" else "默认"
+        mode_labels = {"read": "临时只读", "write": "直接挂载", "override": "覆盖默认"}
+        mode_label = mode_labels.get(mode, mode)
         self.log(f"启动 ({mode_label}): {tool_name} ({tool_path})")
         self.status(f"正在启动 {tool_name} ({mode_label})...")
 
@@ -910,8 +955,12 @@ class LiftLauncher(ctk.CTk):
             self._gui_log(f"✗ 启动失败: {e}", error=True)
             self.after(0, self.status(f"错误: {e}"))
         finally:
-            self.after(0, lambda: setattr(self, "_launching", False))
-            self.after(0, lambda: self._set_tool_buttons_state("normal"))
+            def _reset_launching():
+                with self._launch_lock:
+                    self._launching = False
+                self._set_tool_buttons_state("normal")
+
+            self.after(0, _reset_launching)
 
     def log(self, msg, error=False):
         prefix = "✗ " if error else ""
@@ -923,6 +972,3 @@ class LiftLauncher(ctk.CTk):
 
     def status(self, text):
         self.after(0, lambda: self.status_label.configure(text=text))
-
-
-

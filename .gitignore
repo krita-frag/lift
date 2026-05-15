@@ -1,7 +1,9 @@
-.*/
+.pytest_cache/
+.ruff_cache/
 
 # Zig build artifacts
 zig-out/
+.zig-cache/
 
 # Python
 __pycache__/

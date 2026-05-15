@@ -15,14 +15,15 @@ PROJECT_ROOT = Path(__file__).parent.resolve()
 DIST_DIR = PROJECT_ROOT / "dist"
 ZIG_OUT_DIR = PROJECT_ROOT / "zig-out"
 
-# Windows embeddable Python versions
 PYTHON_VERSIONS = {
-    "3.8": "3.8.19", "3.9": "3.9.19", "3.10": "3.10.14",
-    "3.11": "3.11.9", "3.12": "3.12.4", "3.13": "3.13.0",
+    "3.10": "3.10.11",
+    "3.11": "3.11.9",
+    "3.12": "3.12.4",
+    "3.13": "3.13.0",
 }
 
 def get_project_version() -> str:
-    """Parse project version from pyproject.toml."""
+    """从pyproject.toml中获取python包版本"""
     pyproject = PROJECT_ROOT / "pyproject.toml"
     if pyproject.exists():
         match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(), re.MULTILINE)
@@ -32,7 +33,7 @@ def get_project_version() -> str:
 
 
 def get_python_version() -> str:
-    """Parse Python version from pyproject.toml."""
+    """从pyproject.toml中获取python编译器版本"""
     pyproject = PROJECT_ROOT / "pyproject.toml"
     if pyproject.exists():
         match = re.search(r'requires-python\s*=\s*["\'](>=?)?(\d+\.\d+)', pyproject.read_text())
@@ -42,12 +43,13 @@ def get_python_version() -> str:
 
 
 def get_windows_python_url(version: str) -> tuple[str, str]:
-    """Get Windows embeddable Python URL. Falls back to 3.12 if unavailable."""
+    """获取windows embed下载链接"""
     major_minor = re.match(r'(\d+\.\d+)', version)
     ver = major_minor.group(1) if major_minor else "3.11"
     if ver not in PYTHON_VERSIONS:
-        print(f"[BUILD] WARNING: Python {ver} not available, using 3.12")
-        ver = "3.12"
+        fallback_ver = sorted(PYTHON_VERSIONS.keys())[-1]
+        print(f"[BUILD] WARNING: Python {ver} not available, using {fallback_ver}")
+        ver = fallback_ver
     full = PYTHON_VERSIONS[ver]
     return full, f"https://www.python.org/ftp/python/{full}/python-{full}-embed-amd64.zip"
 
@@ -68,19 +70,19 @@ def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
 
 
 def clean() -> None:
-    """Remove dist directory."""
+    """移除dist目录"""
     if DIST_DIR.exists():
         shutil.rmtree(DIST_DIR)
         print(f"[BUILD] Cleaned {DIST_DIR}")
 
 
 def build_zig() -> None:
-    """Build Zig binary."""
+    """编译zig"""
     run(["zig", "build", "--prefix", str(ZIG_OUT_DIR), "-Doptimize=ReleaseSafe"])
 
 
 def get_system_python() -> Path:
-    """Find system Python."""
+    """查询系统python"""
     for cmd in ["python3", "python"]:
         result = subprocess.run(["which", cmd], capture_output=True, text=True)
         if result.returncode == 0:
@@ -146,7 +148,7 @@ def install_app() -> None:
 
 
 def copy_binary() -> None:
-    """Copy Zig binary to dist/bin/."""
+    """复制zig二进制程序到dist/bin"""
     src_dir = ZIG_OUT_DIR / "bin"
     dst_dir = DIST_DIR / "bin"
 
@@ -158,12 +160,27 @@ def copy_binary() -> None:
     shutil.copytree(src_dir, dst_dir)
 
 def copy_packages() -> None:
-    """Copy packages to dist/packages/."""
+    """复制packages到dist/packages"""
     packages_dir = PROJECT_ROOT / "packages"
     dst_dir = DIST_DIR / "packages"
 
     shutil.rmtree(dst_dir, ignore_errors=True)
     shutil.copytree(packages_dir, dst_dir)
+
+
+def copy_profiles() -> None:
+    """复制profiles到dist/profiles"""
+    profiles_dir = PROJECT_ROOT / "profiles"
+    dst_dir = DIST_DIR / "profiles"
+
+    if not profiles_dir.exists():
+        profiles_dir.mkdir()
+        print(f"[BUILD] Created empty profiles dir: {dst_dir}")
+        return
+
+    shutil.rmtree(dst_dir, ignore_errors=True)
+    shutil.copytree(profiles_dir, dst_dir)
+    print(f"[BUILD] Profiles copied to: {dst_dir}")
 
 
 def verify() -> bool:
@@ -196,6 +213,7 @@ def build(skip_zig: bool = False) -> None:
     install_app()
     copy_binary()
     copy_packages()
+    copy_profiles()
 
     if verify():
         print("=" * 60)

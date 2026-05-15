@@ -20,13 +20,15 @@ _profile = {
     },
     "env_var": "MAYA_APP_DIR",
     "version_subdir_format": "{version}",
+    "plugin_dirs": ["plug-ins"],
+    "exclude_dirs": ["renderData", "autosave"],
 }
-
 
 
 def commands():
     import os
     import sys
+
     global env
 
     _maya_locations = {
@@ -57,9 +59,7 @@ def commands():
 
     if not maya_location:
         raise RuntimeError(
-            f"Maya 2024 not found.\n"
-            f"Searched: {locations}\n"
-            f"Set MAYA_LOCATION to override."
+            f"Maya 2024 not found.\nSearched: {locations}\nSet MAYA_LOCATION to override."
         )
 
     env.MAYA_LOCATION.set(maya_location)

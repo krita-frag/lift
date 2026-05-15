@@ -10,6 +10,7 @@ pub fn build(b: *std.Build) void {
     // Create options module for version injection
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
+    options.addOption([]const u8, "python_version", "3.11");
 
     // Utils 模块 - 共享工具模块
     const utils_mod = b.addModule("utils", .{

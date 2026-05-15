@@ -1,6 +1,6 @@
 # Lift
 
-轻量级 DCC 启动器，支持 Maya、Houdini 等工具的环境隔离与一键切换。
+一款基于rez的轻量级 DCC 启动器，支持 Maya、Houdini 等工具的环境隔离与一键切换。
 ![lift](./images/screenshot.png)
 
 > ⚠️ 🍎 仅 macOS 测试通过，Windows / Linux 待验证
@@ -49,7 +49,7 @@ uv run build.py     # 构建完整分发包
 | 目录          | 定位     | 内容                                                         |
 | ----------- | ------ | ---------------------------------------------------------- |
 | **`app/`**  | DCC 软件 | 指向系统已安装的 Maya、Houdini、Nuke、Blender 等本体。纯引用，不携带载荷。负责 DCC 发现与环境配置。 | 
-| **`ext/`**  | 插件扩展 | Arnold、Redshift、Mgear、自定义工具集等。可自包含（带 `.mll`/`.py`）或引用系统插件。`ext/lift_profile` 提供 DCC 端 Profile 导出功能。 |
+| **`ext/`**  | 插件扩展 | Arnold、Redshift、Mgear、自定义工具集等。可自包含（带 `.mll`/`.py`）或引用系统插件。
 | **`int/`**  | 基础环境 | Python 运行时、通用库、跨项目工具脚本。被 `app` 和 `ext` 隐式或显式依赖。            |
 | **`proj/`** | 项目配置 | **用户直接选用的入口**。纯依赖声明，只声明"这个项目需要哪些 app + ext + int 组合"。不包含 DCC 发现逻辑。 | 
 
@@ -88,11 +88,22 @@ set LIFT_PYTHON_LIB=C:\Python311\libs
 2. Windows: `libexec/python3/` 下的 embeddable Python
 3. Linux/macOS: 系统 Python 库（运行时动态加载）
 
+### 环境变量
+
+| 环境变量 | 说明 | 默认值 |
+|----------|------|--------|
+| `LIFT_PYTHON_LIB` | 自定义 Python 库路径 | 无（自动检测） |
+| `LIFT_PACKAGES_DIR` | 自定义 packages 目录路径 | `<项目根>/packages` |
+| `LIFT_PROFILES_DIR` | 自定义 profiles 目录路径 | `<项目根>/profiles` |
+| `LIFT_TEMP_DIR` | 自定义临时目录路径 | 系统 TMPDIR/TEMP |
+
+> **注意**: Profile 导入导出时，以 `.` 开头的文件和目录（如 `.gitkeep`）会被忽略。
+
 ## 依赖
 
 - Zig 0.16.0+
 - uv
-- Python 3.10+（仅 Windows 构建时）
+- Python 3.11+（仅 Windows 构建时）
 - tkinter (仅Linux/MacOS)
 
 ## 使用手册
@@ -111,8 +122,9 @@ set LIFT_PYTHON_LIB=C:\Python311\libs
 
 **工具 Tab** 显示可启动的软件：
 - 点击 `启动` 启动 DCC
-- **临时模式**: 仅本次启动生效，不修改用户目录（默认）
-- **默认模式**: 写入用户目录并自动备份原配置（在 Profile Tab 切换）
+- **只读**: 仅本次启动生效，不修改用户目录
+- **覆盖**: 写入用户目录并自动备份原配置
+- **读写**: 直接指向 Profile 目录，不备份原配置
 
 ### 3. Profile 管理
 
@@ -129,6 +141,12 @@ set LIFT_PYTHON_LIB=C:\Python311\libs
 **删除 Profile**:
 1. 在列表中勾选要删除的 Profile（支持多选）
 2. 点击 `删除`
+3. 确认删除操作
+
+**恢复备份**:
+1. 先解析环境以检测 DCC
+2. 点击 `恢复备份`
+3. 选择要恢复的备份（覆盖模式创建的备份）
 
 **打包分享**:
 1. 点击 Profile 条目右侧的 `打包`

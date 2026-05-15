@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import atexit
 import json
 import os
@@ -41,11 +42,12 @@ __all__ = [
     "detect_dcc_from_context",
     "scan_filesystem_plugins",
     "update_profile_plugins",
+    "validate_profile_plugins",
 ]
 
 MANIFEST_FILENAME = "manifest.json"
 
-EXCLUDE_DIRS = {"cache", "log", "tmp", "renderData", "autosave", "__pycache__"}
+EXCLUDE_DIRS = {"cache", "log", "tmp", "__pycache__"}
 EXCLUDE_EXTENSIONS = {".pyc", ".pyo", ".log", ".bak"}
 
 _dcc_config_cache: dict[str, dict] = {}
@@ -83,7 +85,8 @@ def current_platform_key() -> str:
 def load_dcc_config(dcc_name: str) -> dict | None:
     """加载 DCC 配置。
 
-    从 packages/app/<dcc_name>/<version>/package.py 中读取 _profile 配置。
+    使用 Rez 包管理 API 从 packages/app/<dcc_name>/<version>/package.py 中读取 _profile 配置。
+    优先使用 Rez API（安全、结构化），回退到受限 exec 解析。
 
     Args:
         dcc_name: DCC 名称，如 "maya"
@@ -104,18 +107,72 @@ def load_dcc_config(dcc_name: str) -> dict | None:
         if not pkg_file.exists():
             continue
 
-        ns: dict = {}
-        try:
-            exec(pkg_file.read_text(encoding="utf-8"), ns)
-        except Exception:
-            continue
+        profile = _load_profile_via_rez(dcc_name, version_dir)
+        if profile is None:
+            profile = _load_profile_via_exec(pkg_file, version_dir)
 
-        profile = ns.get("_profile")
         if profile:
-            profile["_package_root"] = str(version_dir)
             _dcc_config_cache[dcc_name] = profile
             return profile
 
+    return None
+
+
+def _load_profile_via_rez(dcc_name: str, version_dir: Path) -> dict | None:
+    """使用 Rez API 加载 _profile 配置。
+
+    Args:
+        dcc_name: DCC 名称
+        version_dir: 包版本目录路径
+
+    Returns:
+        _profile 配置字典，未找到则返回 None
+    """
+    try:
+        from rez.package_repository import package_repository_manager
+
+        repo = package_repository_manager.get_repository(str(version_dir.parent.parent))
+        packages = repo.get_packages()
+        for pkg in packages:
+            if pkg.name == dcc_name:
+                profile_data = getattr(pkg, "_profile", None)
+                if profile_data and isinstance(profile_data, dict):
+                    profile_data["_package_root"] = str(version_dir)
+                    return profile_data
+    except Exception:
+        pass
+    return None
+
+
+def _load_profile_via_exec(pkg_file: Path, version_dir: Path) -> dict | None:
+    """使用 AST 白名单解析 package.py 中的 _profile 配置。
+
+    仅提取 _profile 字面量赋值，不执行任何代码。
+
+    Args:
+        pkg_file: package.py 文件路径
+        version_dir: 包版本目录路径
+
+    Returns:
+        _profile 配置字典，未找到则返回 None
+    """
+    try:
+        source = pkg_file.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+    except Exception:
+        return None
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "_profile":
+                    try:
+                        profile = ast.literal_eval(node.value)
+                    except Exception:
+                        return None
+                    if isinstance(profile, dict):
+                        profile["_package_root"] = str(version_dir)
+                        return profile
     return None
 
 
@@ -192,13 +249,18 @@ def find_subdir(profile_dir: Path, version_subdir: str, subdir_name: str) -> Pat
     return None
 
 
-def copy_filtered(src: Path, dst: Path) -> None:
+def copy_filtered(
+    src: Path, dst: Path, extra_exclude_dirs: set[str] | None = None
+) -> None:
     """复制目录内容，过滤排除的文件和目录。
 
     Args:
         src: 源目录
         dst: 目标目录
+        extra_exclude_dirs: 额外排除的目录名集合（如 DCC 特有的 renderData）
     """
+    exclude = EXCLUDE_DIRS | (extra_exclude_dirs or set())
+
     dst.mkdir(parents=True, exist_ok=True)
 
     for item in src.iterdir():
@@ -207,9 +269,9 @@ def copy_filtered(src: Path, dst: Path) -> None:
         if item.name == MANIFEST_FILENAME and dst != src:
             continue
         if item.is_dir():
-            if item.name in EXCLUDE_DIRS:
+            if item.name in exclude:
                 continue
-            copy_filtered(item, dst / item.name)
+            copy_filtered(item, dst / item.name, extra_exclude_dirs)
         elif item.is_file():
             if item.suffix in EXCLUDE_EXTENSIONS:
                 continue
@@ -494,7 +556,7 @@ def pack_profile(profile_name: str, output_path: str | Path | None = None) -> Pa
 
     with tarfile.open(output_path, "w:gz") as tar:
         for item in sorted(profile_dir.rglob("*")):
-            if item.name.startswith(".") and item.name != MANIFEST_FILENAME:
+            if item.name.startswith("."):
                 continue
             if item.suffix in EXCLUDE_EXTENSIONS:
                 continue
@@ -511,6 +573,9 @@ def export_profile(
 ) -> Path:
     """从 DCC 用户目录导出 Profile。
 
+    执行通用的目录复制和文件系统插件扫描。DCC 特有的运行时状态
+    （如插件的 auto_load）由各 DCC hook 在调用本函数后自行处理。
+
     Args:
         profile_name: Profile 名称
         dcc: DCC 名称
@@ -526,8 +591,7 @@ def export_profile(
     user_app_dir = find_dcc_user_app_dir(dcc, dcc_version)
     if not user_app_dir or not user_app_dir.exists():
         raise FileNotFoundError(
-            f"{dcc} {dcc_version} user data not found. "
-            f"Expected at: {user_app_dir}"
+            f"{dcc} {dcc_version} user data not found. Expected at: {user_app_dir}"
         )
 
     profile_dir = create_profile(
@@ -540,11 +604,14 @@ def export_profile(
     version_subdir = get_version_subdir(dcc, dcc_version)
     src_dir = user_app_dir / version_subdir
 
+    config = load_dcc_config(dcc)
+    extra_exclude = set(config.get("exclude_dirs", [])) if config else set()
+
     if src_dir.exists():
         dst_dir = profile_dir / version_subdir
-        copy_filtered(src_dir, dst_dir)
+        copy_filtered(src_dir, dst_dir, extra_exclude)
     else:
-        copy_filtered(user_app_dir, profile_dir)
+        copy_filtered(user_app_dir, profile_dir, extra_exclude)
 
     scan_filesystem_plugins(profile_dir, dcc, dcc_version)
 
@@ -576,8 +643,7 @@ def validate_profile_compatibility(manifest: dict, dcc: str, dcc_version: str) -
 
     if manifest_dcc and manifest_dcc != dcc:
         raise RuntimeError(
-            f"DCC mismatch: profile for '{manifest_dcc}', "
-            f"but resolved context has '{dcc}'"
+            f"DCC mismatch: profile for '{manifest_dcc}', but resolved context has '{dcc}'"
         )
 
     if manifest_version and manifest_version != dcc_version:
@@ -602,7 +668,7 @@ def apply_profile(
         mode: 应用模式：
             - "read": 临时目录，只读，安全
             - "write": 直接指向 Profile 目录，可读写，有污染风险
-            - "global": 覆盖用户目录，自动备份
+            - "override": 覆盖用户目录，自动备份
         dcc: DCC 名称（可选，用于验证）
         dcc_version: DCC 版本（可选，用于验证）
 
@@ -613,8 +679,8 @@ def apply_profile(
         RuntimeError: 如果验证失败或无法确定用户目录
         ValueError: 如果 mode 参数无效
     """
-    if mode not in ("read", "write", "global"):
-        raise ValueError(f"Invalid mode: {mode}. Must be 'read', 'write', or 'global'")
+    if mode not in ("read", "write", "override"):
+        raise ValueError(f"Invalid mode: {mode}. Must be 'read', 'write', or 'override'")
 
     profiles_dir = get_profiles_dir()
     profile_dir = profiles_dir / profile_name
@@ -638,7 +704,7 @@ def apply_profile(
     if not env_var:
         return env
 
-    if mode == "global":
+    if mode == "override":
         # 覆盖模式：备份并替换用户目录
         user_app_dir = find_dcc_user_app_dir(effective_dcc, effective_version)
         if not user_app_dir:
@@ -647,18 +713,20 @@ def apply_profile(
             )
 
         _backup_user_app_dir(user_app_dir)
-        copy_filtered(profile_dir, user_app_dir)
+        extra_exclude = set(config.get("exclude_dirs", []))
+        copy_filtered(profile_dir, user_app_dir, extra_exclude)
         return env
 
     if mode == "write":
-        # 链接模式：直接指向 Profile 目录，可读写
+        # 读写模式：直接指向 Profile 目录，可读写
         env[env_var] = str(profile_dir)
         return env
 
-    # 临时模式：复制到临时目录，只读
+    # 只读模式：复制到临时目录，只读
     temp_dir = Path(tempfile.mkdtemp(prefix="lift_profile_"))
     _read_temp_dirs.append(temp_dir)
-    copy_filtered(profile_dir, temp_dir)
+    extra_exclude = set(config.get("exclude_dirs", []))
+    copy_filtered(profile_dir, temp_dir, extra_exclude)
     env[env_var] = str(temp_dir)
     return env
 
@@ -666,15 +734,37 @@ def apply_profile(
 def _backup_user_app_dir(user_app_dir: Path) -> Path:
     """备份用户应用目录。
 
+    如果同一秒内已有同名备份，添加递增后缀避免冲突。
+    备份失败时抛出 RuntimeError，避免后续覆盖操作导致数据丢失。
+
     Args:
         user_app_dir: 用户应用目录路径
 
     Returns:
         备份目录路径
+
+    Raises:
+        RuntimeError: 如果备份失败
     """
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-    backup_dir = user_app_dir.parent / f"{user_app_dir.name}.backup.{timestamp}"
-    shutil.copytree(user_app_dir, backup_dir)
+    base_name = f"{user_app_dir.name}.backup.{timestamp}"
+    backup_dir = user_app_dir.parent / base_name
+
+    if backup_dir.exists():
+        seq = 1
+        while seq < 1000:
+            backup_dir = user_app_dir.parent / f"{base_name}.{seq}"
+            if not backup_dir.exists():
+                break
+            seq += 1
+        else:
+            raise RuntimeError(f"无法生成唯一备份目录名: {base_name}")
+
+    try:
+        shutil.copytree(user_app_dir, backup_dir)
+    except Exception as exc:
+        raise RuntimeError(f"备份失败: {exc}") from exc
+
     return backup_dir
 
 
@@ -693,7 +783,8 @@ def list_backups(dcc_name: str, dcc_version: str) -> list[Path]:
         return []
 
     backups = sorted(
-        p for p in user_app_dir.parent.iterdir()
+        p
+        for p in user_app_dir.parent.iterdir()
         if p.is_dir() and p.name.startswith(f"{user_app_dir.name}.backup.")
     )
     return backups
@@ -712,9 +803,7 @@ def restore_backup(backup_dir: Path, dcc_name: str, dcc_version: str) -> None:
     """
     user_app_dir = find_dcc_user_app_dir(dcc_name, dcc_version)
     if not user_app_dir:
-        raise FileNotFoundError(
-            f"Cannot determine user app dir for {dcc_name} {dcc_version}"
-        )
+        raise FileNotFoundError(f"Cannot determine user app dir for {dcc_name} {dcc_version}")
 
     if not backup_dir.exists():
         raise FileNotFoundError(f"Backup not found: {backup_dir}")
@@ -738,13 +827,14 @@ def get_profiles_for_dcc(dcc: str, dcc_version: str) -> dict[str, dict]:
     return {
         name: info
         for name, info in all_profiles.items()
-        if info["manifest"].get("dcc") == dcc
-        and info["manifest"].get("dcc_version") == dcc_version
+        if info["manifest"].get("dcc") == dcc and info["manifest"].get("dcc_version") == dcc_version
     }
 
 
 def detect_dcc_from_context(context) -> list[dict]:
     """从 Rez 解析上下文中检测 DCC。
+
+    优先使用 load_dcc_config 检测（可靠），_category 属性作为辅助。
 
     Args:
         context: Rez 解析上下文
@@ -755,20 +845,23 @@ def detect_dcc_from_context(context) -> list[dict]:
     dcc_list = []
     for pkg in context.resolved_packages:
         pkg_name = pkg.name.lower()
-        is_dcc = (
-            getattr(pkg, "_category", None) == "app"
-            or load_dcc_config(pkg_name) is not None
-        )
+        is_dcc = load_dcc_config(pkg_name) is not None or getattr(pkg, "_category", None) == "app"
         if is_dcc:
-            dcc_list.append({
-                "name": pkg_name,
-                "version": str(pkg.version),
-            })
+            dcc_list.append(
+                {
+                    "name": pkg_name,
+                    "version": str(pkg.version),
+                }
+            )
     return dcc_list
 
 
 def scan_filesystem_plugins(profile_dir: Path, dcc: str, dcc_version: str) -> None:
     """扫描文件系统插件并更新清单。
+
+    从 DCC 配置中读取 plugin_dirs 列表，扫描所有配置的插件目录。
+    已存在于 manifest 中的插件数据（如 version、auto_load）会被保留，
+    新发现的插件使用默认值。
 
     Args:
         profile_dir: Profile 目录路径
@@ -776,19 +869,36 @@ def scan_filesystem_plugins(profile_dir: Path, dcc: str, dcc_version: str) -> No
         dcc_version: DCC 版本
     """
     manifest = load_manifest(profile_dir)
-    plugins = []
+    existing = {p["name"]: p for p in manifest.get("plugins", [])}
+
+    config = load_dcc_config(dcc)
+    plugin_dirs = config.get("plugin_dirs", []) if config else []
 
     version_subdir = get_version_subdir(dcc, dcc_version)
-    plugins_dir = find_subdir(profile_dir, version_subdir, "plug-ins")
+    plugins = []
+    seen: set[str] = set()
 
-    if plugins_dir:
+    for dir_name in plugin_dirs:
+        plugins_dir = find_subdir(profile_dir, version_subdir, dir_name)
+        if not plugins_dir:
+            continue
         for item in sorted(plugins_dir.iterdir()):
             if item.name.startswith("."):
                 continue
-            plugins.append({
-                "name": item.stem if item.is_file() else item.name,
-                "auto_load": True,
-            })
+            name = item.stem if item.is_file() else item.name
+            if name in seen:
+                continue
+            seen.add(name)
+            if name in existing:
+                plugins.append(existing[name])
+            else:
+                plugins.append(
+                    {
+                        "name": name,
+                        "version": "",
+                        "auto_load": True,
+                    }
+                )
 
     manifest["plugins"] = plugins
     manifest["updated_at"] = datetime.now(UTC).isoformat()
@@ -806,3 +916,50 @@ def update_profile_plugins(profile_dir: Path, plugins: list[dict]) -> None:
     manifest["plugins"] = plugins
     manifest["updated_at"] = datetime.now(UTC).isoformat()
     write_manifest(profile_dir, manifest)
+
+
+def validate_profile_plugins(profile_name: str, dcc: str, dcc_version: str) -> list[str]:
+    """校验 Profile manifest 中的插件列表与磁盘文件的一致性。
+
+    检查 manifest 中记录的每个插件是否在 Profile 目录的插件目录中
+    存在对应的文件。适用于导入或迁移 Profile 后的可用性检查。
+
+    Args:
+        profile_name: Profile 名称
+        dcc: DCC 名称
+        dcc_version: DCC 版本
+
+    Returns:
+        警告消息列表，为空表示全部插件均可用
+    """
+    profiles_dir = get_profiles_dir()
+    profile_dir = profiles_dir / profile_name
+
+    if not profile_dir.exists():
+        return [f"Profile '{profile_name}' not found"]
+
+    manifest = load_manifest(profile_dir)
+    plugins = manifest.get("plugins", [])
+    if not plugins:
+        return []
+
+    config = load_dcc_config(dcc)
+    plugin_dirs = config.get("plugin_dirs", []) if config else []
+    version_subdir = get_version_subdir(dcc, dcc_version)
+
+    available: set[str] = set()
+    for dir_name in plugin_dirs:
+        plugins_dir = find_subdir(profile_dir, version_subdir, dir_name)
+        if not plugins_dir:
+            continue
+        for item in plugins_dir.iterdir():
+            if item.name.startswith("."):
+                continue
+            available.add(item.stem if item.is_file() else item.name)
+
+    warnings = []
+    for plugin in plugins:
+        if plugin["name"] not in available:
+            warnings.append(f"Plugin '{plugin['name']}' listed in manifest but not found on disk")
+
+    return warnings

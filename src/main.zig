@@ -25,7 +25,7 @@ const APP_DIR_PARTS = &.{ "..", PathComponents.lib, PathComponents.app };
 const SITE_PACKAGES_PARTS = &.{ "..", PathComponents.lib, PathComponents.python3, PathComponents.site_packages };
 const LIB_DIR_PARTS = &.{ "..", PathComponents.lib };
 
-const DEFAULT_PYTHON_VERSION = "3.11";
+const DEFAULT_PYTHON_VERSION = build_options.python_version;
 
 pub const AppContext = struct {
     allocator: std.mem.Allocator,

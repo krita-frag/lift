@@ -3,8 +3,6 @@ version = "1.0.0"
 
 requires = []
 
-tools = ["lift_export"]
-
 _category = "ext"
 _data = {
     "label": "Lift Profile Export",

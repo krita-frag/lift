@@ -53,7 +53,7 @@ extern "c" fn fgets(buf: [*]u8, size: c_int, stream: ?*anyopaque) ?[*:0]u8;
 
 /// 检测系统 Python 版本
 pub fn detectSystemPythonVersion(allocator: std.mem.Allocator) PythonError![]const u8 {
-    const cmd = "python3 -c 'import sys; print(\"{}.{}\".format(sys.version_info.major, sys.version_info.minor))'";
+    const cmd = "python3 -c \"import sys; print('{}.{}'.format(sys.version_info.major, sys.version_info.minor))\"";
 
     const fp = popen(cmd, "r") orelse {
         log.warn("Failed to popen python3", .{});
@@ -68,7 +68,8 @@ pub fn detectSystemPythonVersion(allocator: std.mem.Allocator) PythonError![]con
         return PythonError.PythonVersionNotDetected;
     }
 
-    const version = std.mem.trim(u8, buf[0..std.mem.indexOfScalar(u8, &buf, 0).?], " \n\r\t");
+    const end_pos = std.mem.indexOfScalar(u8, &buf, 0) orelse buf.len;
+    const version = std.mem.trim(u8, buf[0..end_pos], " \n\r\t");
     if (version.len > 0) {
         return allocator.dupe(u8, version) catch return PythonError.OutOfMemory;
     }
@@ -276,10 +277,9 @@ pub const PythonRuntime = struct {
         if (!self.initialized) return PythonError.PythonAPIFailed;
 
         const code = allocPrintZ(self.allocator,
-            \\import runpy, sys
-            \\sys.argv = ['{s}']
+            \\import runpy
             \\runpy.run_module('{s}', run_name='__main__')
-        , .{ module_name, module_name }) catch return PythonError.OutOfMemory;
+        , .{module_name}) catch return PythonError.OutOfMemory;
         defer self.allocator.free(code);
 
         const result = self.api.PyRun_SimpleString(code.ptr);
@@ -332,6 +332,41 @@ pub fn resolvePythonLibPath(
 ) PythonError![]const u8 {
     const io = std.Io.Threaded.global_single_threaded.io();
     const dir = std.Io.Dir.cwd();
+
+    // Priority 1: LIFT_PYTHON_LIB environment variable
+    if (std.c.getenv("LIFT_PYTHON_LIB")) |env_ptr| {
+        const env_path = std.mem.span(env_ptr);
+        if (env_path.len > 0) {
+            const lib_names = try getPythonLibSearchNames(allocator, py_ver);
+            defer {
+                for (lib_names) |name| {
+                    allocator.free(name);
+                }
+                allocator.free(lib_names);
+            }
+
+            for (lib_names) |lib_name| {
+                const full_path = try std.fs.path.join(allocator, &.{ env_path, lib_name });
+                errdefer allocator.free(full_path);
+
+                dir.access(io, full_path, .{}) catch {
+                    log.debug("LIFT_PYTHON_LIB: not found: {s}", .{full_path});
+                    allocator.free(full_path);
+                    continue;
+                };
+                log.info("Found Python library via LIFT_PYTHON_LIB: {s}", .{full_path});
+                return full_path;
+            }
+
+            // Also try the path directly as a file
+            dir.access(io, env_path, .{}) catch {
+                log.warn("LIFT_PYTHON_LIB path not accessible: {s}", .{env_path});
+                return PythonError.FileNotFound;
+            };
+            log.info("Using LIFT_PYTHON_LIB directly: {s}", .{env_path});
+            return allocator.dupe(u8, env_path) catch return PythonError.OutOfMemory;
+        }
+    }
 
     // 获取备选库名称列表
     const lib_names = try getPythonLibSearchNames(allocator, py_ver);
@@ -477,14 +512,6 @@ fn freeSystemPaths(allocator: std.mem.Allocator, paths: []const []const u8) void
         allocator.free(p);
     }
     allocator.free(paths);
-}
-
-fn getPythonLibName(allocator: std.mem.Allocator, py_ver: []const u8) ![]const u8 {
-    return switch (builtin.target.os.tag) {
-        .windows => try std.fmt.allocPrint(allocator, "python{s}.dll", .{py_ver}),
-        .macos => try std.fmt.allocPrint(allocator, "libpython{s}.dylib", .{py_ver}),
-        else => try std.fmt.allocPrint(allocator, "libpython{s}.so", .{py_ver}),
-    };
 }
 
 const LibNameTemplate = struct {
