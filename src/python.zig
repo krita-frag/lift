@@ -80,49 +80,16 @@ pub fn detectSystemPythonVersion(allocator: std.mem.Allocator) PythonError![]con
 extern "c" fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
 extern "c" fn fclose(fp: *anyopaque) c_int;
 
-// 平台特定的动态库加载
-const DynLib = switch (builtin.os.tag) {
-    .windows => WindowsDynLib,
-    else => std.DynLib,
-};
-
-// Windows 动态库实现
-const WindowsDynLib = struct {
-    handle: std.os.windows.HMODULE,
-
-    const Self = @This();
-
-    pub fn open(path: []const u8) !Self {
-        const path_w = try std.os.windows.cStrToPrefixedFileW(path);
-        const handle = std.os.windows.LoadLibraryW(&path_w.data) orelse {
-            return PythonError.FailedToLoadLibrary;
-        };
-        return Self{ .handle = handle };
-    }
-
-    pub fn close(self: *Self) void {
-        if (self.handle) |h| {
-            _ = std.os.windows.FreeLibrary(h);
-            self.handle = null;
-        }
-    }
-
-    pub fn lookup(self: *const Self, comptime T: type, name: [:0]const u8) ?T {
-        const proc = std.os.windows.GetProcAddress(self.handle, name) orelse return null;
-        return @ptrCast(proc);
-    }
-};
-
 pub const PythonRuntime = struct {
     allocator: std.mem.Allocator,
-    lib: ?DynLib,
+    lib: ?std.DynLib,
     api: PythonCApi,
     initialized: bool,
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, lib_path: []const u8) PythonError!Self {
-        var lib = DynLib.open(lib_path) catch {
+        var lib = std.DynLib.open(lib_path) catch {
             log.err("Failed to load Python library: {s}", .{lib_path});
             return PythonError.FailedToLoadLibrary;
         };
@@ -281,100 +248,319 @@ pub const PythonRuntime = struct {
 
         const list = self.api.PyList_New(@intCast(argv.len)) orelse {
             if (self.api.PyErr_Occurred() != null) self.api.PyErr_Print();
-            log.err("Failed to create sys.argv list", .{});
-            return PythonError.PythonAPIFailed;
+            return PythonError.OutOfMemory;
         };
+        errdefer self.api.Py_DecRef(list);
 
         for (argv, 0..) |arg, i| {
             const arg_z = allocPrintZ(self.allocator, "{s}", .{arg}) catch return PythonError.OutOfMemory;
             defer self.allocator.free(arg_z);
 
-            const arg_obj = self.api.PyUnicode_FromString(arg_z.ptr) orelse {
+            const obj = self.api.PyUnicode_FromString(arg_z.ptr) orelse {
                 if (self.api.PyErr_Occurred() != null) self.api.PyErr_Print();
-                log.err("Failed to create Python string for argv[{d}]", .{i});
-                return PythonError.PythonAPIFailed;
+                return PythonError.OutOfMemory;
             };
-
-            // PyList_SetItem steals reference
-            if (self.api.PyList_SetItem(list, @intCast(i), arg_obj) != 0) {
+            if (self.api.PyList_SetItem(list, @intCast(i), obj) != 0) {
+                self.api.Py_DecRef(obj);
                 if (self.api.PyErr_Occurred() != null) self.api.PyErr_Print();
-                log.err("Failed to set argv[{d}]", .{i});
-                return PythonError.PythonAPIFailed;
+                return PythonError.PythonExecutionFailed;
             }
         }
 
         if (self.api.PySys_SetObject("argv", list) != 0) {
             if (self.api.PyErr_Occurred() != null) self.api.PyErr_Print();
-            log.err("Failed to set sys.argv", .{});
-            return PythonError.PythonAPIFailed;
-        }
-
-        log.info("Set sys.argv with {d} arguments", .{argv.len});
-    }
-
-    pub fn runString(self: *const Self, code: [:0]const u8) PythonError!void {
-        if (!self.initialized) {
-            log.err("Cannot run string: Python not initialized", .{});
-            return PythonError.PythonNotInitialized;
-        }
-
-        const result = self.api.PyRun_SimpleString(code);
-        if (result != 0) {
-            if (self.api.PyErr_Occurred() != null) self.api.PyErr_Print();
-            log.err("Python execution failed with code: {d}", .{result});
             return PythonError.PythonExecutionFailed;
         }
     }
 
-    pub fn runFile(self: *const Self, file_path: []const u8) PythonError!void {
-        if (!self.initialized) {
-            log.err("Cannot run file: Python not initialized", .{});
-            return PythonError.PythonNotInitialized;
-        }
+    pub fn runModule(self: *const Self, module_name: []const u8) PythonError!void {
+        if (!self.initialized) return PythonError.PythonAPIFailed;
 
-        const path_z = allocPrintZ(self.allocator, "{s}", .{file_path}) catch return PythonError.OutOfMemory;
+        const code = allocPrintZ(self.allocator,
+            \\import runpy
+            \\runpy.run_module('{s}', run_name='__main__')
+        , .{module_name}) catch return PythonError.OutOfMemory;
+        defer self.allocator.free(code);
+
+        const result = self.api.PyRun_SimpleString(code.ptr);
+        if (result != 0) {
+            if (self.api.PyErr_Occurred() != null) {
+                self.api.PyErr_Print();
+            }
+            return PythonError.PythonExecutionFailed;
+        }
+    }
+
+    pub fn runScriptFile(self: *const Self, script_path: []const u8) PythonError!void {
+        if (!self.initialized) return PythonError.PythonAPIFailed;
+
+        const path_z = allocPrintZ(self.allocator, "{s}", .{script_path}) catch return PythonError.OutOfMemory;
         defer self.allocator.free(path_z);
 
         const fp = fopen(path_z.ptr, "r") orelse {
-            log.err("Failed to open file: {s}", .{file_path});
+            log.err("Failed to open script file: {s}", .{script_path});
             return PythonError.FileNotFound;
         };
         defer _ = fclose(fp);
 
         const result = self.api.PyRun_SimpleFile(fp, path_z.ptr);
         if (result != 0) {
-            if (self.api.PyErr_Occurred() != null) self.api.PyErr_Print();
-            log.err("Python file execution failed: {s}", .{file_path});
+            if (self.api.PyErr_Occurred() != null) {
+                self.api.PyErr_Print();
+            }
             return PythonError.PythonExecutionFailed;
         }
-
-        log.info("Successfully executed: {s}", .{file_path});
     }
 
-    pub fn isInitialized(self: *const Self) bool {
-        return self.initialized;
-    }
+    pub fn runString(self: *const Self, code: [:0]const u8) PythonError!void {
+        if (!self.initialized) return PythonError.PythonAPIFailed;
 
-    pub fn getVersion(self: *const Self) []const u8 {
-        return std.mem.span(self.api.Py_GetVersion());
+        const result = self.api.PyRun_SimpleString(code.ptr);
+        if (result != 0) {
+            if (self.api.PyErr_Occurred() != null) {
+                self.api.PyErr_Print();
+            }
+            return PythonError.PythonExecutionFailed;
+        }
     }
 };
 
-fn allocPrintZ(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![:0]u8 {
-    const result = try std.fmt.allocPrint(allocator, fmt, args);
-    defer allocator.free(result);
-    return allocator.dupeZ(u8, result);
+pub fn resolvePythonLibPath(
+    allocator: std.mem.Allocator,
+    exe_dir: []const u8,
+    py_ver: []const u8,
+) PythonError![]const u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const dir = std.Io.Dir.cwd();
+
+    // Priority 1: LIFT_PYTHON_LIB environment variable
+    if (std.c.getenv("LIFT_PYTHON_LIB")) |env_ptr| {
+        const env_path = std.mem.span(env_ptr);
+        if (env_path.len > 0) {
+            const lib_names = try getPythonLibSearchNames(allocator, py_ver);
+            defer {
+                for (lib_names) |name| {
+                    allocator.free(name);
+                }
+                allocator.free(lib_names);
+            }
+
+            for (lib_names) |lib_name| {
+                const full_path = try std.fs.path.join(allocator, &.{ env_path, lib_name });
+                errdefer allocator.free(full_path);
+
+                dir.access(io, full_path, .{}) catch {
+                    log.debug("LIFT_PYTHON_LIB: not found: {s}", .{full_path});
+                    allocator.free(full_path);
+                    continue;
+                };
+                log.info("Found Python library via LIFT_PYTHON_LIB: {s}", .{full_path});
+                return full_path;
+            }
+
+            // Also try the path directly as a file
+            dir.access(io, env_path, .{}) catch {
+                log.warn("LIFT_PYTHON_LIB path not accessible: {s}", .{env_path});
+                return PythonError.FileNotFound;
+            };
+            log.info("Using LIFT_PYTHON_LIB directly: {s}", .{env_path});
+            return allocator.dupe(u8, env_path) catch return PythonError.OutOfMemory;
+        }
+    }
+
+    // 获取备选库名称列表
+    const lib_names = try getPythonLibSearchNames(allocator, py_ver);
+    defer {
+        for (lib_names) |name| {
+            allocator.free(name);
+        }
+        allocator.free(lib_names);
+    }
+
+    // Platform-specific search order:
+    // - Windows: 优先查找打包目录（embeddable Python）
+    // - Linux/macOS: 优先查找系统路径（使用系统 Python）
+
+    if (builtin.target.os.tag == .windows) {
+        // Windows: 优先查打包目录
+        const bundled_paths = try getBundledPaths(allocator, exe_dir);
+        defer freeBundledPaths(allocator, bundled_paths);
+        for (bundled_paths) |p| {
+            for (lib_names) |lib_name| {
+                const full_path = try std.fs.path.join(allocator, &.{ p, lib_name });
+                errdefer allocator.free(full_path);
+
+                dir.access(io, full_path, .{}) catch {
+                    allocator.free(full_path);
+                    continue;
+                };
+                return full_path;
+            }
+        }
+    } else {
+        // Linux/macOS: 优先查系统路径
+        const system_paths = try getSystemPaths(allocator);
+        defer freeSystemPaths(allocator, system_paths);
+        for (system_paths) |p| {
+            for (lib_names) |lib_name| {
+                const full_path = try std.fs.path.join(allocator, &.{ p, lib_name });
+                errdefer allocator.free(full_path);
+
+                log.debug("Checking: {s}", .{full_path});
+
+                dir.access(io, full_path, .{}) catch {
+                    log.debug("  Not found: {s}", .{full_path});
+                    allocator.free(full_path);
+                    continue;
+                };
+                log.info("Found Python library: {s}", .{full_path});
+                return full_path;
+            }
+        }
+
+        // Fallback: 查找打包目录（用于自定义部署场景）
+        const bundled_paths = try getBundledPaths(allocator, exe_dir);
+        defer freeBundledPaths(allocator, bundled_paths);
+        for (bundled_paths) |p| {
+            for (lib_names) |lib_name| {
+                const full_path = try std.fs.path.join(allocator, &.{ p, lib_name });
+                errdefer allocator.free(full_path);
+
+                log.debug("Checking: {s}", .{full_path});
+
+                dir.access(io, full_path, .{}) catch {
+                    log.debug("  Not found: {s}", .{full_path});
+                    allocator.free(full_path);
+                    continue;
+                };
+                log.info("Found Python library: {s}", .{full_path});
+                return full_path;
+            }
+        }
+    }
+
+    return PythonError.FileNotFound;
 }
 
-/// 查找 Python 库路径
-pub fn findPythonLibrary(allocator: std.mem.Allocator, lib_dir: []const u8) ![:0]const u8 {
-    const lib_path = try std.fs.path.join(allocator, &.{ lib_dir, "libpython3.11.so" });
-    defer allocator.free(lib_path);
+// 定义 bundled 路径的组件
+const BUNDLED_PATH_COMPONENTS = &[_][]const []const u8{
+    &.{ "lib", "python3", "bin" },
+    &.{"lib"},
+};
 
-    std.fs.accessAbsolute(lib_path, .{}) catch {
-        log.err("Python library not found: {s}", .{lib_path});
-        return PythonError.FileNotFound;
-    };
+fn getBundledPaths(allocator: std.mem.Allocator, exe_dir: []const u8) ![]const []const u8 {
+    const base_dir = std.fs.path.dirname(exe_dir) orelse ".";
 
-    return allocator.dupeZ(u8, lib_path);
+    const path_count = BUNDLED_PATH_COMPONENTS.len;
+
+    const paths = try allocator.alloc([]const u8, path_count);
+    errdefer allocator.free(paths);
+
+    inline for (BUNDLED_PATH_COMPONENTS, 0..) |components, i| {
+        var path_parts: [1 + components.len][]const u8 = undefined;
+        path_parts[0] = base_dir;
+        for (components, 0..) |comp, j| {
+            path_parts[1 + j] = comp;
+        }
+        paths[i] = try std.fs.path.join(allocator, &path_parts);
+    }
+
+    return paths;
+}
+
+fn freeBundledPaths(allocator: std.mem.Allocator, paths: []const []const u8) void {
+    for (paths) |p| {
+        allocator.free(p);
+    }
+    allocator.free(paths);
+}
+
+const MACOS_SYSTEM_PATHS = &.{
+    "/opt/homebrew/Frameworks/Python.framework/Versions/Current/lib",
+    "/opt/homebrew/lib",
+    "/Library/Frameworks/Python.framework/Versions/Current/lib",
+    "/System/Library/Frameworks/Python.framework/Versions/Current/lib",
+    "/usr/local/lib",
+    "/usr/lib",
+};
+
+const LINUX_SYSTEM_PATHS = &.{
+    "/usr/lib/x86_64-linux-gnu",
+    "/usr/local/lib",
+    "/usr/lib",
+};
+
+const SYSTEM_PATHS = switch (builtin.target.os.tag) {
+    .macos => MACOS_SYSTEM_PATHS,
+    else => LINUX_SYSTEM_PATHS,
+};
+
+/// 获取系统 Python 库路径
+/// 使用编译时定义的 macOS 和 Linux 回退路径
+fn getSystemPaths(allocator: std.mem.Allocator) ![]const []const u8 {
+    const fallback_paths = SYSTEM_PATHS;
+
+    const paths = try allocator.alloc([]const u8, fallback_paths.len);
+    inline for (fallback_paths, 0..) |p, i| {
+        paths[i] = try allocator.dupe(u8, p);
+    }
+    return paths;
+}
+
+fn freeSystemPaths(allocator: std.mem.Allocator, paths: []const []const u8) void {
+    for (paths) |p| {
+        allocator.free(p);
+    }
+    allocator.free(paths);
+}
+
+const LibNameTemplate = struct {
+    fmt: []const u8,
+    ver_arg: enum { specific, generic, none },
+};
+
+const WINDOWS_TEMPLATES = &[_]LibNameTemplate{
+    .{ .fmt = "python{s}.dll", .ver_arg = .specific },
+    .{ .fmt = "python{s}.dll", .ver_arg = .generic },
+    .{ .fmt = "python3.dll", .ver_arg = .none },
+};
+
+const MACOS_TEMPLATES = &[_]LibNameTemplate{
+    .{ .fmt = "libpython{s}.dylib", .ver_arg = .specific },
+    .{ .fmt = "libpython{s}.dylib", .ver_arg = .generic },
+    .{ .fmt = "libpython3.dylib", .ver_arg = .none },
+};
+
+const LINUX_TEMPLATES = &[_]LibNameTemplate{
+    .{ .fmt = "libpython{s}.so", .ver_arg = .specific },
+    .{ .fmt = "libpython{s}.so.1.0", .ver_arg = .specific },
+    .{ .fmt = "libpython{s}.so", .ver_arg = .generic },
+    .{ .fmt = "libpython3.so", .ver_arg = .none },
+};
+
+const PLATFORM_TEMPLATES = switch (builtin.target.os.tag) {
+    .windows => WINDOWS_TEMPLATES,
+    .macos => MACOS_TEMPLATES,
+    else => LINUX_TEMPLATES,
+};
+
+fn getPythonLibSearchNames(allocator: std.mem.Allocator, py_ver: []const u8) ![]const []const u8 {
+    const count = PLATFORM_TEMPLATES.len;
+
+    const names = try allocator.alloc([]const u8, count);
+    errdefer allocator.free(names);
+
+    inline for (PLATFORM_TEMPLATES, 0..) |template, i| {
+        names[i] = switch (template.ver_arg) {
+            .specific => try std.fmt.allocPrint(allocator, template.fmt, .{py_ver}),
+            .generic => try std.fmt.allocPrint(allocator, template.fmt, .{"3"}),
+            .none => try allocator.dupe(u8, template.fmt),
+        };
+    }
+
+    return names;
+}
+
+fn allocPrintZ(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![:0]const u8 {
+    return std.fmt.allocPrintSentinel(allocator, fmt, args, 0);
 }
