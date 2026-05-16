@@ -15,7 +15,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          apt-get update
+          apt-get update -y
           apt-get install -y tcl-tk tk
 
       - name: Install uv
@@ -24,18 +24,21 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Install Python via uv
-        run: uv python install 3.11
+        run: |
+          source $GITHUB_PATH 2>/dev/null || true
+          uv python install 3.11
 
       - name: Install Zig 0.16.0
         run: |
           curl -sSL https://ziglang.org/download/0.16.0/zig-linux-x86_64-0.16.0.tar.xz | tar -xJ
-          mv zig-linux-x86_64-0.16.0 /opt/zig
+          sudo mv zig-linux-x86_64-0.16.0 /opt/zig
           echo "/opt/zig" >> $GITHUB_PATH
+
+      - name: Build with explicit Zig path
+        run: |
+          export PATH="/opt/zig:$HOME/.cargo/bin:$PATH"
           which zig
           zig version
-
-      - name: Build
-        run: |
           uv sync
           uv run build.py
 
@@ -52,20 +55,20 @@ jobs:
 
       - name: Install uv
         run: |
-          Invoke-WebRequest -Uri "https://astral.sh/uv/install.sh" -OutFile "install-uv.sh"
-          bash install-uv.sh
+          $env:Path = "$env:LOCALAPPDATA\uv\bin;$env:Path"
+          Invoke-WebRequest -Uri "https://astral.sh/uv/install.ps1" -OutFile "install-uv.ps1"
+          powershell -ExecutionPolicy Bypass -File "install-uv.ps1"
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:LOCALAPPDATA\uv\bin"
 
       - name: Install Python via uv
-        run: uv python install 3.11
+        run: |
+          uv python install 3.11
 
       - name: Install Zig 0.16.0
         run: |
           Invoke-WebRequest -Uri "https://ziglang.org/download/0.16.0/zig-windows-x86_64-0.16.0.zip" -OutFile "zig.zip"
           Expand-Archive -Path "zig.zip" -DestinationPath "C:\"
-          $zigPath = "C:\zig-windows-x86_64-0.16.0"
-          echo $zigPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          $env:Path = $zigPath + ";" + $env:Path
-          zig version
+          Add-Content -Path $env:GITHUB_PATH -Value "C:\zig-windows-x86_64-0.16.0"
 
       - name: Build
         run: |
